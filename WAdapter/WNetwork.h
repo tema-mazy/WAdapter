@@ -30,6 +30,7 @@
 #define ESP_MAX_PUT_BODY_SIZE 512
 #define WIFI_RECONNECTION 50000
 #define WIFI_RECONNECTION_TRYS 3
+#define WIFI_AP_TIMEOUT 300000
 const char* CONFIG_PASSWORD = "12345678";
 const char* APPLICATION_JSON = "application/json";
 const char* TEXT_HTML = "text/html";
@@ -74,7 +75,8 @@ public:
 		this->mqttClient = nullptr;
 		settings = new WSettings(wlog, appSettingsFlag);
 		loadSettings();
-		lastMqttConnect = lastWifiConnect = 0;
+		lastMqttConnect = lastWifiConnect = apStartTime = 0;
+		wifiConnectTrys = 0;
 		this->initialMqttSent = false;
 		this->lastWillEnabled = true;
 
@@ -148,13 +150,13 @@ public:
 		settings->endReadingFirstTime();
 		bool result = true;
 		bool waitForWifiConnection = (deepSleepSeconds > 0);
-		if (!isWebServerRunning()) {
+		if (!isSoftAP()) {
 			if (WiFi.status() != WL_CONNECTED) {
 
 				if ((!settings->existsNetworkSettings()) ||
 				    (settings->forceNetworkAccessPoint()) ||
 			      (getSsid() == "") ||
-					  (wifiConnectTrys == WIFI_RECONNECTION_TRYS)) {
+					  ((wifiConnectTrys == WIFI_RECONNECTION_TRYS) && (now - lastWifiConnect > WIFI_RECONNECTION))) {
 					//Create own AP
 					String apSsid = getClientName(false);
 					wlog->notice(F("Start AccessPoint for configuration. SSID '%s'; password '%s'"), apSsid.c_str(), CONFIG_PASSWORD);
@@ -164,6 +166,7 @@ public:
 					dnsApServer->setErrorReplyCode(DNSReplyCode::NoError);
 					dnsApServer->start(53, "*", WiFi.softAPIP());
 					this->startWebServer();
+					apStartTime = now;
 				} else if ((wifiConnectTrys < WIFI_RECONNECTION_TRYS) && ((lastWifiConnect == 0) || (now - lastWifiConnect > WIFI_RECONNECTION))) {
 					wifiConnectTrys++;
 					wlog->notice("Connecting to '%s': %d. try", getSsid(), wifiConnectTrys);
@@ -190,9 +193,16 @@ public:
 
 			}
 
-		} else {
+		}
+		if (isWebServerRunning()) {
 			if (isSoftAP()) {
 				dnsApServer->processNextRequest();
+				//AP is open, but a network is configured -> restart every WIFI_AP_TIMEOUT and try the network again
+				if ((settings->existsNetworkSettings()) && (!settings->forceNetworkAccessPoint()) && (strcmp(getSsid(), "") != 0) && (!isUpdateRunning())
+						&& (now - apStartTime > WIFI_AP_TIMEOUT)) {
+					wlog->notice(F("AccessPoint timeout -> restart"));
+					ESP.restart();
+				}
 			}
 			//webServer->handleClient();
 			result = ((!isSoftAP()) && (!isUpdateRunning()));
@@ -595,7 +605,7 @@ private:
 	WProperty *mqttSetTopic;
 	WProperty *mqttStateTopic;
 	PubSubClient *mqttClient;
-	unsigned long lastMqttConnect, lastWifiConnect, lastWifiConnectFirstTry;
+	unsigned long lastMqttConnect, lastWifiConnect, lastWifiConnectFirstTry, apStartTime;
 	byte wifiConnectTrys;
 	WStringStream* responseStream = nullptr;
 	WLed *statusLed;
@@ -640,6 +650,9 @@ private:
 				initialMqttSent = true;
 			} else {
 				//Send every changed property only
+				mqttClient->publish(String(topic + SLASH + "alive").c_str(), "true", true);
+				mqttClient->publish(String(topic + SLASH + "$stats/signal").c_str(), String(WiFi.RSSI()).c_str(), true);
+				
 				WProperty* property = device->firstProperty;
 				while (property != nullptr) {
 					if ((complete) || (property->isChanged())) {
