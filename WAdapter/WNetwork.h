@@ -72,6 +72,8 @@ public:
 		this->deepSleepFlag = nullptr;
 		this->deepSleepSeconds = 0;
 		this->startupTime = millis();
+		this->lastUptimeMillis = this->startupTime;
+		this->millisRollovers = 0;
 		this->mqttClient = nullptr;
 		settings = new WSettings(wlog, appSettingsFlag);
 		loadSettings();
@@ -145,8 +147,17 @@ public:
 		}
 	}
 
+	//Seconds since boot, survives the 49.7 day millis() rollover
+	unsigned long getUptime() {
+		unsigned long now = millis();
+		if (now < lastUptimeMillis) millisRollovers++;
+		lastUptimeMillis = now;
+		return (unsigned long) (((((uint64_t) millisRollovers) << 32) + now - startupTime) / 1000);
+	}
+
 	//returns true, if no configuration mode and no own ap is opened
 	bool loop(unsigned long now) {
+		getUptime(); //track millis() rollover
 		settings->endReadingFirstTime();
 		bool result = true;
 		bool waitForWifiConnection = (deepSleepSeconds > 0);
@@ -614,6 +625,8 @@ private:
 	WDevice *deepSleepFlag;
 	int deepSleepSeconds;
 	unsigned long startupTime;
+	unsigned long lastUptimeMillis;
+	unsigned long millisRollovers;
 	char body_data[ESP_MAX_PUT_BODY_SIZE];
   bool b_has_body_data = false;
 	Print* debuggingOutput;
@@ -629,6 +642,8 @@ private:
 	void mqttSendDeviceState(String topic, WDevice *device, bool complete) {
 		if ((this->isMqttConnected()) && (isSupportingMqtt()) && (device->isDeviceStateComplete())) {
 			wlog->notice(F("Send actual device state via MQTT"));
+			mqttClient->publish(String(topic + SLASH + "$stats/uptime").c_str(), String(getUptime()).c_str(), true);
+			mqttClient->publish(String(topic + SLASH + "$stats/signal").c_str(), String(WiFi.RSSI()).c_str(), true);
 
 			if (device->sendCompleteDeviceState()) {
 				//Send all properties of device in one json structure
@@ -642,6 +657,8 @@ private:
 						json.propertyBoolean("alive", true);
 					}
 					json.propertyString("firmware", firmwareVersion.c_str());
+					json.propertyUnsignedLong("uptime", getUptime());
+					json.propertyInteger("signal", WiFi.RSSI());
 				}
 				device->toJsonValues(&json, MQTT);
 				json.endObject();
@@ -651,7 +668,6 @@ private:
 			} else {
 				//Send every changed property only
 				mqttClient->publish(String(topic + SLASH + "alive").c_str(), "true", true);
-				mqttClient->publish(String(topic + SLASH + "$stats/signal").c_str(), String(WiFi.RSSI()).c_str(), true);
 				
 				WProperty* property = device->firstProperty;
 				while (property != nullptr) {
@@ -1049,6 +1065,9 @@ private:
 			page->print(F("<tr><th>MAC address:</th><td>"));
 			page->print(WiFi.macAddress());
 			page->print(F("</td></tr>"));
+			page->print(F("<tr><th>Signal:</th><td>"));
+			page->print(WiFi.RSSI());
+			page->print(F(" dBm</td></tr>"));
 
 			page->print(F("<tr><th>Current sketch size:</th><td>"));
 			page->print(ESP.getSketchSize());
@@ -1068,9 +1087,9 @@ private:
 			page->print(ESP.getHeapFragmentation());
 			page->print(F(" %</td></tr>"));
 			#endif
-			page->print(F("<tr><th>Running since:</th><td>"));
-			page->print(((millis() - this->startupTime)/1000/60));
-			page->print(F(" minutes</td></tr>"));
+			unsigned long uptime = getUptime();
+			page->printf("<tr><th>Uptime:</th><td>%lud %02lu:%02lu:%02lu</td></tr>",
+					uptime / 86400, (uptime / 3600) % 24, (uptime / 60) % 60, uptime % 60);
 			page->print(F("</table>"));
 			page->printf(HTTP_BUTTON, "config", "get", "Main menu");
 			page->print(FPSTR(HTTP_BODY_END));
