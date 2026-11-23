@@ -642,8 +642,15 @@ private:
 	void mqttSendDeviceState(String topic, WDevice *device, bool complete) {
 		if ((this->isMqttConnected()) && (isSupportingMqtt()) && (device->isDeviceStateComplete())) {
 			wlog->notice(F("Send actual device state via MQTT"));
-			mqttClient->publish(String(topic + SLASH + "$stats/uptime").c_str(), String(getUptime()).c_str(), true);
-			mqttClient->publish(String(topic + SLASH + "$stats/signal").c_str(), String(WiFi.RSSI()).c_str(), true);
+			if (device->isMainDevice()) {
+				//Same layout as the other home nodes: devices/<mac without colons>/$stats/...
+				String mac = WiFi.macAddress();
+				mac.replace(":", "");
+				mac.toLowerCase();
+				String statsTopic = "devices/" + mac + "/$stats/";
+				mqttClient->publish(String(statsTopic + "uptime").c_str(), String(getUptime()).c_str(), true);
+				mqttClient->publish(String(statsTopic + "signal").c_str(), String(WiFi.RSSI()).c_str(), true);
+			}
 
 			if (device->sendCompleteDeviceState()) {
 				//Send all properties of device in one json structure
