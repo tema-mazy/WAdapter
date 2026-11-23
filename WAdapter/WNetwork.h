@@ -1376,6 +1376,8 @@ private:
 				json.propertyString("idx", getIdx());
 				json.propertyString("ip", getDeviceIp().toString().c_str());
 				json.propertyString("firmware", firmwareVersion.c_str());
+				json.propertyUnsignedLong("uptime", getUptime());
+				json.propertyInteger("signal", WiFi.RSSI());
 			}
 			device->toJsonValues(&json, WEBTHING);
 			json.endObject();
